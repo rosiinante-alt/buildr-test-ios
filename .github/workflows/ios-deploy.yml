@@ -1,0 +1,258 @@
+name: iOS Build & Deploy
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: 'Deploy to TestFlight or App Store'
+        required: true
+        default: 'testflight'
+        type: choice
+        options:
+          - testflight
+          - appstore
+      version:
+        description: 'Version number (for App Store releases)'
+        required: false
+        type: string
+
+env:
+  XCODE_VERSION: '15.4'
+  RUBY_VERSION: '3.2'
+
+jobs:
+  build-ios:
+    name: Build & Deploy iOS App
+    runs-on: macos-14  # Xcode 15.x
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for version detection
+      
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ env.RUBY_VERSION }}
+          bundler-cache: true
+      
+      - name: Install fastlane
+        run: |
+          gem install fastlane
+          fastlane --version
+          
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
+      
+      - name: Cache Swift Package Manager
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/Library/Developer/Xcode/DerivedData
+          key: ${{ runner.os }}-spm-${{ hashFiles('**/Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+      
+      - name: Cache CocoaPods
+        if: hashFiles('**/Podfile.lock') != ''
+        uses: actions/cache@v4
+        with:
+          path: Pods
+          key: ${{ runner.os }}-pods-${{ hashFiles('**/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+      
+      - name: Install dependencies
+        run: |
+          if [ -f "Podfile" ]; then
+            echo "Installing CocoaPods dependencies..."
+            pod install
+          fi
+          if [ -f "Package.swift" ]; then
+            echo "Resolving Swift Package Manager dependencies..."
+            swift package resolve
+          fi
+      
+      - name: Create keychain
+        env:
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          # Create temporary keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
+          security set-keychain-settings -t 3600 -u build.keychain
+          security list-keychains -d user -s build.keychain
+      
+      - name: Import signing certificate
+        env:
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          # Decode and import certificate
+          echo "$BUILD_CERTIFICATE_BASE64" | base64 --decode > certificate.p12
+          security import certificate.p12 \
+            -k build.keychain \
+            -P "$P12_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          
+          # Allow codesign to access keychain
+          security set-key-partition-list \
+            -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" \
+            build.keychain
+          
+          # Cleanup
+          rm certificate.p12
+      
+      - name: Import provisioning profile
+        env:
+          PROVISIONING_PROFILE_BASE64: ${{ secrets.PROVISIONING_PROFILE_BASE64 }}
+        run: |
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          PP_PATH=$(mktemp ~/Library/MobileDevice/Provisioning\ Profiles/XXXXXXXXXX.mobileprovision)
+          echo "$PROVISIONING_PROFILE_BASE64" | base64 --decode > "$PP_PATH"
+          echo "Provisioning profile installed at $PP_PATH"
+      
+      - name: Create App Store Connect API Key
+        env:
+          APP_STORE_CONNECT_API_KEY_JSON: ${{ secrets.APP_STORE_CONNECT_API_KEY_JSON }}
+        run: |
+          mkdir -p /tmp
+          echo "$APP_STORE_CONNECT_API_KEY_JSON" > /tmp/api_key.json
+          echo "API key created at /tmp/api_key.json"
+      
+      - name: Determine deployment target
+        id: deploy-target
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "target=${{ github.event.inputs.deploy_target }}" >> $GITHUB_OUTPUT
+          elif [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            echo "target=appstore" >> $GITHUB_OUTPUT
+          else
+            echo "target=testflight" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Build and upload to TestFlight
+        if: steps.deploy-target.outputs.target == 'testflight'
+        env:
+          XCODE_PROJECT: ${{ secrets.XCODE_PROJECT }}
+          SCHEME: ${{ secrets.SCHEME }}
+          BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
+          PROVISIONING_PROFILE: ${{ secrets.PROVISIONING_PROFILE_NAME }}
+          APP_STORE_CONNECT_API_KEY_PATH: /tmp/api_key.json
+          TESTFLIGHT_GROUP: ${{ secrets.TESTFLIGHT_GROUP || 'Internal Testers' }}
+          CHANGELOG: ${{ github.event.head_commit.message }}
+        run: |
+          echo "Building for TestFlight..."
+          fastlane ios beta
+      
+      - name: Build and upload to App Store
+        if: steps.deploy-target.outputs.target == 'appstore'
+        env:
+          XCODE_PROJECT: ${{ secrets.XCODE_PROJECT }}
+          SCHEME: ${{ secrets.SCHEME }}
+          BUNDLE_ID: ${{ secrets.BUNDLE_ID }}
+          PROVISIONING_PROFILE: ${{ secrets.PROVISIONING_PROFILE_NAME }}
+          VERSION_NUMBER: ${{ github.event.inputs.version || github.ref_name }}
+          APP_STORE_CONNECT_API_KEY_PATH: /tmp/api_key.json
+        run: |
+          echo "Building for App Store..."
+          fastlane ios release
+      
+      - name: Upload IPA artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-app-${{ github.sha }}
+          path: "./build/*.ipa"
+          retention-days: 30
+          if-no-files-found: warn
+      
+      - name: Upload dSYM for crash reporting
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-dsym-${{ github.sha }}
+          path: "./build/*.dSYM.zip"
+          retention-days: 90
+          if-no-files-found: ignore
+      
+      - name: Comment on PR
+        if: github.event_name == 'pull_request' && success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: '✅ iOS build succeeded! IPA available in artifacts.'
+            })
+      
+      - name: Cleanup
+        if: always()
+        run: |
+          # Delete temporary keychain
+          security delete-keychain build.keychain || true
+          
+          # Remove API key
+          rm -f /tmp/api_key.json
+          
+          # Remove provisioning profiles
+          rm -f ~/Library/MobileDevice/Provisioning\ Profiles/*.mobileprovision || true
+
+  test-ios:
+    name: Run iOS Tests
+    runs-on: macos-14
+    if: github.event_name == 'pull_request'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
+      
+      - name: Install dependencies
+        run: |
+          if [ -f "Podfile" ]; then
+            pod install
+          fi
+          if [ -f "Package.swift" ]; then
+            swift package resolve
+          fi
+      
+      - name: Run tests
+        env:
+          SCHEME: ${{ secrets.SCHEME }}
+          TEST_DEVICE: "iPhone 15"
+        run: |
+          xcodebuild test \
+            -scheme "$SCHEME" \
+            -destination "platform=iOS Simulator,name=iPhone 15" \
+            -enableCodeCoverage YES \
+            | xcpretty --color
+      
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.sha }}
+          path: |
+            build/reports
+            build/test-results
+          retention-days: 30
+          if-no-files-found: ignore

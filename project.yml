@@ -1,0 +1,30 @@
+name: buildr-test-ios
+
+options:
+  bundleIdPrefix: com.rosinante
+  deploymentTarget:
+    iOS: "15.0"
+
+targets:
+  buildr-test-ios:
+    type: application
+    platform: iOS
+    sources:
+      - buildr-test-ios
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.rosinante.buildr-test-ios
+      INFOPLIST_FILE: buildr-test-ios/Info.plist
+      PRODUCT_NAME: buildr-test-ios
+      SWIFT_VERSION: "5.0"
+      TARGETED_DEVICE_FAMILY: "1,2"
+      DEVELOPMENT_TEAM: ""
+      CODE_SIGN_STYLE: Automatic
+      MARKETING_VERSION: "1.0"
+      CURRENT_PROJECT_VERSION: "1"
+    info:
+      path: buildr-test-ios/Info.plist
+      properties:
+        CFBundleDisplayName: "Buildr Test"
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: true
+        UILaunchScreen: {}

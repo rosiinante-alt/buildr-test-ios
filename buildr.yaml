@@ -1,0 +1,97 @@
+# Buildr iOS Test App Configuration
+
+project:
+  name: buildr-test-ios
+  preset: ios-swiftui-firebase
+  type: ios-app
+
+deployment:
+  # Xcode Configuration
+  xcode_project: buildr-test-ios.xcodeproj
+  scheme: buildr-test-ios
+  bundle_id: com.rosinante.buildr-test-ios
+  team_id: REPLACE_WITH_YOUR_TEAM_ID  # Get from Apple Developer Account
+  
+  # TestFlight Settings
+  testflight:
+    enabled: true
+    group: "Internal Testers"
+    auto_distribute: true
+    changelog: "Initial test build for Buildr System validation"
+  
+  # App Store Settings
+  appstore:
+    auto_submit: false
+    skip_metadata: true
+    skip_screenshots: true
+  
+  # Build Configuration
+  build:
+    configuration: Release
+    export_method: app-store
+    include_bitcode: false
+    include_symbols: true
+    
+  # Code Signing (Manual)
+  signing:
+    style: manual
+    certificate_name: "Apple Distribution"
+    provisioning_profile: "buildr-test-ios Distribution Profile"
+
+# Integrations (minimal - no external services for test app)
+integrations:
+  firebase:
+    enabled: false
+  
+  revenuecat:
+    enabled: false
+  
+  analytics:
+    telemetrydeck:
+      enabled: false
+    mixpanel:
+      enabled: false
+  
+  sentry:
+    enabled: false
+
+# Environment Variables
+environment:
+  production:
+    ENVIRONMENT: production
+  
+  staging:
+    ENVIRONMENT: staging
+  
+  development:
+    ENVIRONMENT: development
+
+# Testing
+testing:
+  unit_tests:
+    enabled: false
+    
+  ui_tests:
+    enabled: false
+  
+  code_coverage: false
+
+# Notifications
+notifications:
+  slack:
+    enabled: false
+  
+  discord:
+    enabled: false
+
+# Advanced
+advanced:
+  match:
+    enabled: false
+  
+  auto_increment_build: true
+  
+  version_bump_strategy: patch
+  
+  localization:
+    enabled: false
